@@ -1,0 +1,75 @@
+# Local agent configuration and bundled development tools.
+/.agents/
+/.codex/
+/AGENTS.md
+/.tools/
+
+# Dart / Flutter caches and generated build output.
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+coverage/
+app.*.symbols
+app.*.map.json
+
+# Environment files may contain secrets; keep the setup template in Git.
+.env
+.env.*
+!.env.example
+
+# Editor, OS, and temporary files.
+*.iml
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*.tmp
+*.log
+
+# Android local configuration, caches, signing, and packaged applications.
+android/local.properties
+android/key.properties
+android/.gradle/
+android/.kotlin/
+android/.cxx/
+android/app/debug/
+android/app/profile/
+android/app/release/
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# iOS dependency caches, generated configuration, signing, and archives.
+ios/Pods/
+ios/.symlinks/
+ios/DerivedData/
+xcuserdata/
+ios/Flutter/ephemeral/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+ios/Runner/GeneratedPluginRegistrant.*
+*.ipa
+*.xcarchive/
+*.dSYM/
+*.p12
+*.pfx
+*.p8
+*.mobileprovision
+
+# Optional Node tooling dependencies and local Supabase CLI state/data exports.
+node_modules/
+supabase/.temp/
+supabase/.branches/
+supabase/backups/
+supabase/dumps/
+
+# Keep source assets, platform projects, migrations, tests, and docs in Git.
+# pubspec.lock and .metadata also belong in this Flutter application repository.

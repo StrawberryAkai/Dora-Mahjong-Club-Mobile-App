@@ -1,0 +1,35 @@
+{
+    "name": "Dora Helper",
+    "short_name": "Dora Helper",
+    "start_url": ".",
+    "display": "standalone",
+    "background_color": "#F6F5F0",
+    "theme_color": "#234D3C",
+    "description": "Dora Helper for Dora Mahjong Club (UCSD 麻将社)",
+    "orientation": "portrait-primary",
+    "prefer_related_applications": false,
+    "icons": [
+        {
+            "src": "icons/Icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon-maskable-192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "maskable"
+        },
+        {
+            "src": "icons/Icon-maskable-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "maskable"
+        }
+    ]
+}
