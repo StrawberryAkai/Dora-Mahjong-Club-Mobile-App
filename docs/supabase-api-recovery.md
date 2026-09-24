@@ -1,44 +1,52 @@
 # Recovering the deployed players API
 
-The production database uses `public.players.member_id` for member identity,
-`current_mmr` for the current rating, and immutable
-`private.member_carryovers.source` for imported statistics. The original
-`public.members` schema is not the production member store.
+Production uses `public.players.member_id` for member identity,
+`current_mmr` for the current rating, and `private.member_carryovers.source` for
+imported statistics. The original `public.members` table remains as an empty
+base table and is not the production member store.
 
-Re-running `202609220001_club.sql` can overwrite newer RPC definitions without
-removing the newer tables. In this state, `club_snapshot()` omits the rating and
-event version fields. The app rejects that snapshot during startup, before the
-member selection screen appears.
+Re-running `202609220001_club.sql` can replace newer RPC definitions while
+leaving the production tables in place. The app then receives an outdated
+`club_snapshot()` and rejects it during startup, before the member selection
+screen appears. Do not rerun 001 or rewrite migration history to recover the
+API.
 
-## Targeted recovery
+## Migration deployment
 
-`supabase/repairs/20260924_restore_players_api.sql` is a repair for this specific
-schema and known overwritten function definitions. It is not an initialization
-script or a replacement for the normal migration sequence.
+The production Supabase project is connected to the repository's `main`
+branch. New files under `supabase/migrations/` are applied through that
+integration; the history currently records 001, while the ratings and events
+objects already exist from the manual cutover.
 
-The repository's `deploy-web.yml` deploys Flutter to GitHub Pages only; it does
-not apply database SQL. The Supabase project's GitHub connection was also shown
-as disconnected during this investigation. Pushing this repair to GitHub alone
-therefore does not update the live database. Apply this reviewed file explicitly
-in the target project's SQL Editor. Files under `supabase/repairs/` are not
-automatically discovered as migrations by `supabase db push`.
+Migrations `202609220002_ratings.sql` and `202609220003_events.sql` support two
+schema paths. On a fresh database without `public.players`, each executes its
+complete original members-schema SQL. When `public.players` exists, each checks
+the canonical schema and its required tables, columns, helpers, and triggers.
+Only a complete matching schema is adopted as a no-op so Supabase can record
+the pending migration without recreating tables, replaying rating history, or
+changing balances. An incomplete or unknown schema stops the migration.
 
-- Check the target project and inspect its actual schema before applying it.
-- Review the complete transaction, including preflight checks and backups.
-- An unknown function definition or incompatible schema must stop the repair;
-  investigate the difference rather than removing the guard.
-- The repair preserves member data, imported baselines, ratings, and game history.
-  It restores function definitions without replaying settlements or refreshing
-  balances during deployment.
-- Existing function permissions are retained. Original function definitions are
-  saved privately so an operator can inspect and restore them if necessary.
-- Compare member counts and a deterministic digest of player rows before and
-  after deployment. This check reads data without creating test games or users.
+The new `202609240001_restore_players_api.sql` runs the guarded players API
+repair when `public.players` exists and is a no-op on a fresh members-schema
+database. Its embedded SQL body is copied from
+`supabase/repairs/20260924_restore_players_api.sql`, with only that file's
+outer `BEGIN` and `COMMIT` removed so Supabase controls the migration
+transaction. Keep the embedded body in exact parity with the standalone repair
+when either file changes. The standalone file remains available for explicit
+review or recovery outside the connected migration flow.
 
-After successful recovery, retry startup in the installed app. A server-only
-repair does not require a new APK. Do not work around this error by removing the
+The repair preserves member data, imported baselines, ratings, and game
+history. It backs up the affected function definitions and restores the known
+players-aware public API without replaying settlements or refreshing balances.
+Unknown function definitions or incompatible schema must stop the repair;
+investigate the difference instead of removing a guard. Compare member counts
+and a deterministic digest of player rows before and after a manual recovery.
+
+After the migration succeeds, retry startup in the installed app. A server-only
+repair does not require a new APK. Do not work around the error by removing the
 client's schema checks or substituting default MMR values.
 
-Rollback requires reviewing the saved definitions against the current schema.
-Restoring the old snapshot also restores the original startup failure; do not
-blindly apply a rollback after unrelated API changes.
+Rollback requires reviewing saved function definitions against the current
+schema. Restoring the old snapshot also restores the original startup failure;
+do not apply a rollback after unrelated API changes without reviewing those
+changes.

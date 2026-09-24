@@ -1,3 +1,11 @@
+-- Adopt the reviewed production rating schema without replaying its initialization.
+-- Databases on the original members schema still run the original migration below.
+DO $migration$
+DECLARE
+  v_missing text[];
+BEGIN
+  IF to_regclass('public.players') IS NULL THEN
+    EXECUTE $fresh_schema_202609220002_ratings$
 -- Dora Mahjong Club v0.1 PT / MMR settlement integration
 --
 -- This migration is source only.  It deliberately does not contact a
@@ -1539,3 +1547,151 @@ revoke all on function private.prevent_rating_baseline_change()
   from public, anon, authenticated;
 revoke all on function private.prevent_rating_ledger_mutation()
   from public, anon, authenticated;
+
+$fresh_schema_202609220002_ratings$;
+    RETURN;
+  END IF;
+
+  SELECT array_agg(required.relation_name ORDER BY required.relation_name)
+    INTO v_missing
+    FROM (VALUES
+      ('public.players'),
+      ('public.members'),
+      ('public.rooms'),
+      ('public.room_seats'),
+      ('public.games'),
+      ('public.game_players'),
+      ('public.score_audits'),
+      ('public.rating_settlements'),
+      ('public.rating_settlement_players'),
+      ('private.rating_control'),
+      ('private.rating_settlement_audits'),
+      ('private.member_carryovers'),
+      ('private.legacy_cutovers')
+    ) AS required(relation_name)
+   WHERE to_regclass(required.relation_name) IS NULL;
+  IF v_missing IS NOT NULL THEN
+    RAISE EXCEPTION 'Rating adoption stopped: missing canonical relations: %',
+      array_to_string(v_missing, ', ');
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM (VALUES
+        ('public.players', 'member_id', 'uuid', true),
+        ('public.players', 'current_mmr', 'double precision', true),
+        ('public.players', 'mmr_baseline', 'double precision', true),
+        ('public.rating_settlements', 'id', 'uuid', true),
+        ('public.rating_settlements', 'game_id', 'uuid', true),
+        ('public.rating_settlements', 'settlement_order', 'bigint', true),
+        ('public.rating_settlements', 'revision', 'integer', true),
+        ('public.rating_settlements', 'rule_version', 'text', true),
+        ('public.rating_settlements', 'original_points', 'jsonb', true),
+        ('public.rating_settlements', 'calculation', 'jsonb', true),
+        ('public.rating_settlement_players', 'settlement_id', 'uuid', true),
+        ('public.rating_settlement_players', 'member_id', 'uuid', true),
+        ('private.member_carryovers', 'member_id', 'uuid', true),
+        ('private.member_carryovers', 'source', 'jsonb', true)
+      ) AS expected(relation_name, column_name, type_name, must_be_not_null)
+      LEFT JOIN pg_attribute a
+        ON a.attrelid = to_regclass(expected.relation_name)
+       AND a.attname = expected.column_name
+       AND a.attnum > 0
+       AND NOT a.attisdropped
+     WHERE a.attnum IS NULL
+        OR format_type(a.atttypid, a.atttypmod) IS DISTINCT FROM expected.type_name
+        OR (expected.must_be_not_null AND NOT a.attnotnull)
+  ) THEN
+    RAISE EXCEPTION 'Rating adoption stopped: a canonical rating or carryover column is missing or incompatible';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_constraint c
+      JOIN pg_attribute a
+        ON a.attrelid = c.conrelid
+       AND a.attnum = c.conkey[1]
+     WHERE c.conrelid = 'public.players'::regclass
+       AND c.contype = 'p'
+       AND cardinality(c.conkey) = 1
+       AND a.attname = 'member_id'
+  ) THEN
+    RAISE EXCEPTION 'Rating adoption stopped: public.players.member_id is not the primary key';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = 'members'
+       AND column_name IN ('mmr', 'mmr_baseline')
+  ) OR EXISTS (SELECT 1 FROM public.members LIMIT 1) THEN
+    RAISE EXCEPTION 'Rating adoption stopped: public.members is not the empty original base table';
+  END IF;
+
+  SELECT array_agg(required.signature ORDER BY required.signature)
+    INTO v_missing
+    FROM (VALUES
+      ('private.current_member_id()'),
+      ('private.is_admin(uuid)'),
+      ('private.require_allowed_session()'),
+      ('private.require_member_actor()'),
+      ('private.actor_label(uuid)'),
+      ('private.lock_room(text)'),
+      ('private.wind_order(text)'),
+      ('private.assert_score(integer)'),
+      ('private.claim_request(uuid,uuid,text,text)'),
+      ('private.lock_rating_state()'),
+      ('private.allocate_settlement_order()'),
+      ('private.append_rating_settlement(uuid,bigint,integer,uuid,uuid,jsonb,jsonb)'),
+      ('private.replay_ratings(uuid,uuid)'),
+      ('private.calculate_rating(uuid[],integer[],double precision[])'),
+      ('private.refresh_player_statistics()'),
+      ('private.prevent_rating_baseline_change()'),
+      ('private.prevent_rating_ledger_mutation()')
+    ) AS required(signature)
+   WHERE to_regprocedure(required.signature) IS NULL;
+  IF v_missing IS NOT NULL THEN
+    RAISE EXCEPTION 'Rating adoption stopped: missing canonical helpers: %',
+      array_to_string(v_missing, ', ');
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM (VALUES
+        ('private.current_member_id()'),
+        ('private.is_admin(uuid)'),
+        ('private.require_allowed_session()'),
+        ('private.require_member_actor()'),
+        ('private.lock_room(text)'),
+        ('private.wind_order(text)'),
+        ('private.assert_score(integer)'),
+        ('private.claim_request(uuid,uuid,text,text)'),
+        ('private.lock_rating_state()'),
+        ('private.allocate_settlement_order()'),
+        ('private.append_rating_settlement(uuid,bigint,integer,uuid,uuid,jsonb,jsonb)'),
+        ('private.replay_ratings(uuid,uuid)'),
+        ('private.calculate_rating(uuid[],integer[],double precision[])'),
+        ('private.refresh_player_statistics()'),
+        ('private.prevent_rating_baseline_change()'),
+        ('private.prevent_rating_ledger_mutation()')
+      ) AS required(signature)
+      JOIN pg_proc p ON p.oid = to_regprocedure(required.signature)
+     WHERE p.prosrc ~* 'public[[:space:]]*\.[[:space:]]*"?members"?'
+  ) THEN
+    RAISE EXCEPTION 'Rating adoption stopped: a private helper still references public.members';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_proc p
+     WHERE p.oid = to_regprocedure('private.refresh_player_statistics()')
+       AND p.prosrc ~* 'public[[:space:]]*\.[[:space:]]*"?players"?'
+  ) THEN
+    RAISE EXCEPTION 'Rating adoption stopped: player statistics helper is not adapted to public.players';
+  END IF;
+
+  -- The verified canonical schema already owns its balances and ledger. This
+  -- migration is now recorded without replaying its members-based initializer.
+END;
+$migration$;

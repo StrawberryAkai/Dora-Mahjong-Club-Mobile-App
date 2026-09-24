@@ -1,3 +1,11 @@
+-- Adopt the reviewed production event schema after the rating migration.
+-- Databases on the original members schema still run the original migration below.
+DO $migration$
+DECLARE
+  v_missing text[];
+BEGIN
+  IF to_regclass('public.players') IS NULL THEN
+    EXECUTE $fresh_schema_202609220003_events$
 -- Dora Mahjong Club v0.1 events
 --
 -- This migration is source only.  It deliberately does not contact a
@@ -556,3 +564,87 @@ revoke all on function private.validate_event_room_ids_trigger()
   from public, anon, authenticated;
 revoke all on function private.prevent_game_event_change()
   from public, anon, authenticated;
+
+$fresh_schema_202609220003_events$;
+    RETURN;
+  END IF;
+
+  IF to_regclass('public.events') IS NULL THEN
+    RAISE EXCEPTION 'Event adoption stopped: public.events is missing';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM (VALUES
+        ('id', 'uuid'),
+        ('name', 'text'),
+        ('description', 'text'),
+        ('starts_at', 'timestamp with time zone'),
+        ('ends_at', 'timestamp with time zone'),
+        ('room_ids', 'text[]'),
+        ('version', 'integer'),
+        ('created_at', 'timestamp with time zone')
+      ) AS expected(column_name, type_name)
+      LEFT JOIN pg_attribute a
+        ON a.attrelid = 'public.events'::regclass
+       AND a.attname = expected.column_name
+       AND a.attnum > 0
+       AND NOT a.attisdropped
+     WHERE a.attnum IS NULL
+        OR format_type(a.atttypid, a.atttypmod) IS DISTINCT FROM expected.type_name
+  ) THEN
+    RAISE EXCEPTION 'Event adoption stopped: public.events does not match the canonical event schema';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_attribute a
+     WHERE a.attrelid = 'public.games'::regclass
+       AND a.attname = 'event_id'
+       AND a.atttypid = 'uuid'::regtype
+       AND a.attnum > 0
+       AND NOT a.attisdropped
+  ) THEN
+    RAISE EXCEPTION 'Event adoption stopped: public.games.event_id is missing or incompatible';
+  END IF;
+
+  SELECT array_agg(required.signature ORDER BY required.signature)
+    INTO v_missing
+    FROM (VALUES
+      ('private.validate_event_room_ids(text[])'),
+      ('private.validate_event_room_ids_trigger()'),
+      ('private.prevent_game_event_change()'),
+      ('private.lock_rating_state()'),
+      ('private.claim_request(uuid,uuid,text,text)'),
+      ('private.require_member_actor()'),
+      ('private.lock_room(text)'),
+      ('private.wind_order(text)'),
+      ('public.save_event(uuid,text,text,timestamp with time zone,timestamp with time zone,text[],integer,uuid)'),
+      ('public.start_game(text,uuid,uuid)'),
+      ('public.club_snapshot()')
+    ) AS required(signature)
+   WHERE to_regprocedure(required.signature) IS NULL;
+  IF v_missing IS NOT NULL THEN
+    RAISE EXCEPTION 'Event adoption stopped: missing canonical event helpers: %',
+      array_to_string(v_missing, ', ');
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_trigger t
+     WHERE t.tgrelid = 'public.events'::regclass
+       AND t.tgname = 'events_room_ids_valid'
+       AND NOT t.tgisinternal
+  ) OR NOT EXISTS (
+    SELECT 1
+      FROM pg_trigger t
+     WHERE t.tgrelid = 'public.games'::regclass
+       AND t.tgname = 'games_event_id_immutable'
+       AND NOT t.tgisinternal
+  ) THEN
+    RAISE EXCEPTION 'Event adoption stopped: required event integrity triggers are missing';
+  END IF;
+
+  -- The event schema and three-argument start helper are already installed.
+  -- Record adoption without recreating tables or changing event/game rows.
+END;
+$migration$;
