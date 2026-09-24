@@ -1,0 +1,98 @@
+name: Deploy Dora Helper to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.5'
+          channel: stable
+          cache: true
+
+      - name: Generate public client configuration
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          url = os.environ['SUPABASE_URL'].strip()
+          key = os.environ['SUPABASE_PUBLISHABLE_KEY'].strip()
+          if urlparse(url).scheme != 'https' or not urlparse(url).hostname:
+              raise SystemExit('Set SUPABASE_URL in repository Actions secrets.')
+          if not key.startswith('sb_publishable_'):
+              raise SystemExit('Set SUPABASE_PUBLISHABLE_KEY to a client publishable key.')
+          if any(character in url + key for character in '\r\n'):
+              raise SystemExit('Supabase configuration must contain single-line values.')
+
+          # Flutter bundles this file publicly. Never include service-role keys
+          # or administrator passwords, even when supplied as Actions secrets.
+          Path('.env').write_text(
+              f'APP_MODE=development\nSUPABASE_URL={url}\n'
+              f'SUPABASE_PUBLISHABLE_KEY={key}\n',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Install dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Analyze Dart code
+        run: flutter analyze --no-pub
+
+      - name: Run local tests
+        run: flutter test --no-pub
+
+      - name: Build web application
+        env:
+          # Project Pages needs /repository-name/; custom domains may use /.
+          PAGES_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+        run: flutter build web --release --no-pub --base-href "${PAGES_BASE_PATH%/}/"
+
+      - name: Upload built site
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
