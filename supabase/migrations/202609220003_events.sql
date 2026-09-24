@@ -1,15 +1,15 @@
 -- Adopt the reviewed production event schema after the rating migration.
--- Databases on the original members schema still run the original migration below.
+-- Databases without events run the complete players-schema migration below.
 DO $migration$
 DECLARE
   v_missing text[];
 BEGIN
-  IF to_regclass('public.players') IS NULL THEN
+  IF to_regclass('public.events') IS NULL THEN
     EXECUTE $fresh_schema_202609220003_events$
 -- Dora Mahjong Club v0.1 events
 --
--- This migration is source only.  It deliberately does not contact a
--- database, apply a migration, or seed production events.
+-- Initial event schema for the canonical players model.
+-- Existing canonical event objects are adopted by the outer migration block.
 
 set search_path = public, extensions, pg_catalog;
 
@@ -395,12 +395,12 @@ begin
     'rating_schema_version', 1,
     'members', coalesce((
       select jsonb_agg(jsonb_build_object(
-        'id', m.id::text,
+        'id', m.member_id::text,
         'name', m.name,
-        'mmr', m.mmr,
+        'mmr', m.current_mmr,
         'mmr_baseline', m.mmr_baseline
-      ) order by m.name, m.id)
-      from public.members m
+      ) order by m.name, m.member_id)
+      from public.players m
     ), '[]'::jsonb),
     'rooms', coalesce((
       select jsonb_agg(jsonb_build_object(
@@ -442,7 +442,7 @@ begin
             'rank', gp.rank
           ) order by private.wind_order(gp.wind))
           from public.game_players gp
-          join public.members m on m.id = gp.member_id
+          join public.players m on m.member_id = gp.member_id
           where gp.game_id = g.id
         ), '[]'::jsonb),
         'started_at', g.started_at,

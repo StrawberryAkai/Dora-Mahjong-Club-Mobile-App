@@ -1,16 +1,15 @@
 -- Adopt the reviewed production rating schema without replaying its initialization.
--- Databases on the original members schema still run the original migration below.
+-- Databases without the rating ledger run the complete players-schema migration below.
 DO $migration$
 DECLARE
   v_missing text[];
 BEGIN
-  IF to_regclass('public.players') IS NULL THEN
+  IF to_regclass('public.rating_settlements') IS NULL THEN
     EXECUTE $fresh_schema_202609220002_ratings$
 -- Dora Mahjong Club v0.1 PT / MMR settlement integration
 --
--- This migration is source only.  It deliberately does not contact a
--- database, apply a migration, or backfill games that were completed before
--- the rating cutover.
+-- Initial PT/MMR rating schema for the canonical players model.
+-- Existing canonical rating objects are adopted by the outer migration block.
 
 set search_path = public, extensions, pg_catalog;
 
@@ -40,15 +39,15 @@ begin
     select 1
       from information_schema.columns
      where table_schema = 'public'
-       and table_name = 'members'
+       and table_name = 'players'
        and column_name in (
-         'mmr', 'mmr_baseline', 'elo', 'rating', 'rating_points',
+         'current_mmr', 'mmr_baseline', 'elo', 'rating', 'rating_points',
          'rating_balance', 'mmr_balance'
        )
   ) then
     raise exception using
       errcode = 'P0001',
-      message = '检测到 members 中未受支持的既有 MMR/评级列；请先完成经过审核的基线迁移';
+      message = '检测到 players 中未受支持的既有 MMR/评级列；请先完成经过审核的基线迁移';
   end if;
 end;
 $$;
@@ -443,15 +442,15 @@ begin
     -- Lock all four member rows in one deterministic order, then read one
     -- shared old-MMR vector before any balance is updated.
     for v_row in
-      select m.id
+      select m.member_id AS id
         from public.game_players gp
-        join public.members m on m.id = gp.member_id
+        join public.players m on m.member_id = gp.member_id
        where gp.game_id = p_game_id
-       order by m.id
+       order by m.member_id
     loop
-      select m.mmr into v_locked_mmr
-        from public.members m
-       where m.id = v_row.id
+      select m.current_mmr into v_locked_mmr
+        from public.players m
+       where m.member_id = v_row.id
        for update;
 
       select rsp.new_mmr
@@ -468,8 +467,8 @@ begin
        limit 1;
       if not found then
         select m.mmr_baseline into v_expected_mmr
-          from public.members m
-         where m.id = v_row.id;
+          from public.players m
+         where m.member_id = v_row.id;
       end if;
       if v_locked_mmr is distinct from v_expected_mmr then
         raise exception using
@@ -480,10 +479,10 @@ begin
 
     select array_agg(gp.member_id order by gp.member_id),
            array_agg(gp.score order by gp.member_id),
-           array_agg(m.mmr order by gp.member_id)
+           array_agg(m.current_mmr order by gp.member_id)
       into v_member_ids, v_scores, v_old_mmrs
       from public.game_players gp
-      join public.members m on m.id = gp.member_id
+      join public.players m on m.member_id = gp.member_id
      where gp.game_id = p_game_id;
     v_calc := private.calculate_rating(v_member_ids, v_scores, v_old_mmrs);
     v_order := private.allocate_settlement_order();
@@ -506,9 +505,9 @@ begin
       select value
         from jsonb_array_elements(v_calc -> 'players') as elements(value)
     loop
-      update public.members
-         set mmr = (v_row.value ->> 'new_mmr')::double precision
-       where id = (v_row.value ->> 'member_id')::uuid;
+      update public.players
+         set current_mmr = (v_row.value ->> 'new_mmr')::double precision
+       where member_id = (v_row.value ->> 'member_id')::uuid;
     end loop;
 
     update public.games
@@ -550,12 +549,12 @@ begin
     'rating_schema_version', 1,
     'members', coalesce((
       select jsonb_agg(jsonb_build_object(
-        'id', m.id::text,
+        'id', m.member_id::text,
         'name', m.name,
-        'mmr', m.mmr,
+        'mmr', m.current_mmr,
         'mmr_baseline', m.mmr_baseline
-      ) order by m.name, m.id)
-      from public.members m
+      ) order by m.name, m.member_id)
+      from public.players m
     ), '[]'::jsonb),
     'rooms', coalesce((
       select jsonb_agg(jsonb_build_object(
@@ -583,7 +582,7 @@ begin
             'rank', gp.rank
           ) order by private.wind_order(gp.wind))
           from public.game_players gp
-          join public.members m on m.id = gp.member_id
+          join public.players m on m.member_id = gp.member_id
           where gp.game_id = g.id
         ), '[]'::jsonb),
         'started_at', g.started_at,
@@ -869,9 +868,9 @@ begin
   -- member with no rated game).  This rejects foreign/manual MMR state rather
   -- than silently erasing it.
   for v_member in
-    select m.id, m.mmr, m.mmr_baseline
-      from public.members m
-     order by m.id
+    select m.member_id AS id, m.current_mmr AS mmr, m.mmr_baseline
+      from public.players m
+     order by m.member_id
   loop
     if v_member.mmr_baseline is null
        or v_member.mmr_baseline <> 1500.0
@@ -922,7 +921,7 @@ begin
   -- Reset only after the trusted-balance checks above.  Every rated game is
   -- then replayed, including games whose players were indirect opponents of
   -- the corrected game.
-  update public.members set mmr = mmr_baseline;
+  update public.players set current_mmr = mmr_baseline;
   v_seen_order := null;
 
   for v_current in
@@ -950,10 +949,10 @@ begin
 
     select array_agg(gp.member_id order by gp.member_id),
            array_agg(gp.score order by gp.member_id),
-           array_agg(m.mmr order by gp.member_id)
+           array_agg(m.current_mmr order by gp.member_id)
       into v_member_ids, v_scores, v_old_mmrs
       from public.game_players gp
-      join public.members m on m.id = gp.member_id
+      join public.players m on m.member_id = gp.member_id
      where gp.game_id = v_current.game_id;
     if coalesce(array_length(v_member_ids, 1), 0) <> 4 then
       raise exception using errcode = 'P0001', message = '评级历史对局成员数量无效';
@@ -993,9 +992,9 @@ begin
       select value
         from jsonb_array_elements(v_calc -> 'players') as elements(value)
     loop
-      update public.members
-         set mmr = (v_player ->> 'new_mmr')::double precision
-       where id = (v_player ->> 'member_id')::uuid;
+      update public.players
+         set current_mmr = (v_player ->> 'new_mmr')::double precision
+       where member_id = (v_player ->> 'member_id')::uuid;
       if not found then
         raise exception using errcode = 'P0001', message = '评级结果包含未知成员';
       end if;
@@ -1007,18 +1006,18 @@ $$;
 
 -- Existing members receive the new system's trusted cutover baseline.  No
 -- old game is converted merely because these columns now exist.
-alter table public.members
-  add column mmr double precision not null default 1500.0,
+alter table public.players
+  add column current_mmr double precision not null default 1500.0,
   add column mmr_baseline double precision not null default 1500.0;
 
-alter table public.members
-  add constraint members_mmr_finite
+alter table public.players
+  add constraint players_current_mmr_finite
     check (
-      mmr <> 'NaN'::double precision
-      and mmr <> 'Infinity'::double precision
-      and mmr <> '-Infinity'::double precision
+      current_mmr <> 'NaN'::double precision
+      and current_mmr <> 'Infinity'::double precision
+      and current_mmr <> '-Infinity'::double precision
     ),
-  add constraint members_mmr_baseline_finite
+  add constraint players_mmr_baseline_finite
     check (
       mmr_baseline = 1500.0
       and mmr_baseline <> 'NaN'::double precision
@@ -1080,7 +1079,7 @@ create unique index rating_settlements_initial_order_unique
 
 create table public.rating_settlement_players (
   settlement_id uuid not null references public.rating_settlements(id) on delete restrict,
-  member_id uuid not null references public.members(id) on delete restrict,
+  member_id uuid not null references public.players(member_id) on delete restrict,
   final_points integer not null,
   actual_uma double precision not null,
   pt double precision not null,
@@ -1169,8 +1168,8 @@ begin
 end;
 $$;
 
-create trigger members_rating_baseline_immutable
-before update on public.members
+create trigger players_rating_baseline_immutable
+before update on public.players
 for each row execute function private.prevent_rating_baseline_change();
 
 create or replace function private.prevent_rating_ledger_mutation()
@@ -1556,7 +1555,6 @@ $fresh_schema_202609220002_ratings$;
     INTO v_missing
     FROM (VALUES
       ('public.players'),
-      ('public.members'),
       ('public.rooms'),
       ('public.room_seats'),
       ('public.games'),
@@ -1617,16 +1615,6 @@ $fresh_schema_202609220002_ratings$;
        AND a.attname = 'member_id'
   ) THEN
     RAISE EXCEPTION 'Rating adoption stopped: public.players.member_id is not the primary key';
-  END IF;
-
-  IF EXISTS (
-    SELECT 1
-      FROM information_schema.columns
-     WHERE table_schema = 'public'
-       AND table_name = 'members'
-       AND column_name IN ('mmr', 'mmr_baseline')
-  ) OR EXISTS (SELECT 1 FROM public.members LIMIT 1) THEN
-    RAISE EXCEPTION 'Rating adoption stopped: public.members is not the empty original base table';
   END IF;
 
   SELECT array_agg(required.signature ORDER BY required.signature)
@@ -1692,6 +1680,6 @@ $fresh_schema_202609220002_ratings$;
   END IF;
 
   -- The verified canonical schema already owns its balances and ledger. This
-  -- migration is now recorded without replaying its members-based initializer.
+  -- migration is now recorded without replaying its rating initializer.
 END;
 $migration$;

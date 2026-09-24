@@ -1,8 +1,7 @@
 -- Dora Mahjong Club v0.1
 --
--- This migration is intentionally delivered as source only.  It has not been
--- applied from this repository and no database is contacted by the build
--- agent.  Review it in a disposable Supabase project before applying it.
+-- Canonical player identity and core club RPCs. Apply through the versioned
+-- migration sequence; existing projects receive changes in later migrations.
 
 create extension if not exists pgcrypto;
 
@@ -14,15 +13,15 @@ set search_path = public, extensions, pg_catalog;
 -- Public read models.  All writes go through the RPCs below.
 -- ---------------------------------------------------------------------------
 
-create table if not exists public.members (
-  id uuid primary key default gen_random_uuid(),
+create table if not exists public.players (
+  member_id uuid primary key default gen_random_uuid(),
   name text not null,
   normalized_name text not null,
   created_at timestamptz not null default now(),
-  constraint members_name_length check (char_length(name) between 1 and 20),
-  constraint members_name_characters check (name ~ '^[A-Za-z㐀-䶿一-鿿𠀀-𯨟]+$'),
-  constraint members_normalized_name check (normalized_name = lower(btrim(name))),
-  constraint members_normalized_name_unique unique (normalized_name)
+  constraint players_name_length check (char_length(name) between 1 and 20),
+  constraint players_name_characters check (name ~ '^[A-Za-z㐀-䶿一-鿿𠀀-𯨟]+$'),
+  constraint players_normalized_name check (normalized_name = lower(btrim(name))),
+  constraint players_normalized_name_unique unique (normalized_name)
 );
 
 create table if not exists public.rooms (
@@ -35,7 +34,7 @@ create table if not exists public.rooms (
 create table if not exists public.room_seats (
   room_id text not null references public.rooms(id) on delete cascade,
   wind text not null,
-  member_id uuid not null references public.members(id) on delete restrict,
+  member_id uuid not null references public.players(member_id) on delete restrict,
   seated_at timestamptz not null default now(),
   primary key (room_id, wind),
   constraint room_seats_wind check (wind in ('east', 'south', 'west', 'north')),
@@ -45,7 +44,7 @@ create table if not exists public.room_seats (
 create table if not exists public.games (
   id uuid primary key default gen_random_uuid(),
   room_id text not null references public.rooms(id) on delete restrict,
-  creator_id uuid not null references public.members(id) on delete restrict,
+  creator_id uuid not null references public.players(member_id) on delete restrict,
   status text not null default 'active',
   started_at timestamptz not null default now(),
   completed_at timestamptz,
@@ -70,7 +69,7 @@ create unique index if not exists games_one_active_per_room
 
 create table if not exists public.game_players (
   game_id uuid not null references public.games(id) on delete cascade,
-  member_id uuid not null references public.members(id) on delete restrict,
+  member_id uuid not null references public.players(member_id) on delete restrict,
   wind text not null,
   score integer,
   rank integer,
@@ -105,7 +104,7 @@ on conflict (id) do nothing;
 
 create table if not exists private.session_members (
   auth_user_id uuid primary key references auth.users(id) on delete cascade,
-  member_id uuid not null references public.members(id) on delete restrict,
+  member_id uuid not null references public.players(member_id) on delete restrict,
   selected_at timestamptz not null default now()
 );
 
@@ -270,7 +269,7 @@ begin
   select m.name
     into v_label
     from private.session_members sm
-    join public.members m on m.id = sm.member_id
+    join public.players m on m.member_id = sm.member_id
    where sm.auth_user_id = p_actor;
   if v_label is not null then
     return v_label;
@@ -455,10 +454,10 @@ begin
   select jsonb_build_object(
     'members', coalesce((
       select jsonb_agg(jsonb_build_object(
-        'id', m.id::text,
+        'id', m.member_id::text,
         'name', m.name
-      ) order by m.name, m.id)
-      from public.members m
+      ) order by m.name, m.member_id)
+      from public.players m
     ), '[]'::jsonb),
     'rooms', coalesce((
       select jsonb_agg(jsonb_build_object(
@@ -486,7 +485,7 @@ begin
             'rank', gp.rank
           ) order by private.wind_order(gp.wind))
           from public.game_players gp
-          join public.members m on m.id = gp.member_id
+          join public.players m on m.member_id = gp.member_id
           where gp.game_id = g.id
         ), '[]'::jsonb),
         'started_at', g.started_at,
@@ -536,9 +535,9 @@ declare
   v_member uuid;
 begin
   begin
-    insert into public.members(name, normalized_name)
+    insert into public.players(name, normalized_name)
     values (v_name, v_normalized)
-    returning id into v_member;
+    returning member_id into v_member;
   exception when unique_violation then
     perform private.raise_duplicate_name();
   end;
@@ -566,7 +565,7 @@ begin
   if coalesce(auth.jwt() ->> 'is_anonymous', 'false') <> 'true' then
     raise exception using errcode = 'P0001', message = '此账号不能选择普通成员';
   end if;
-  if not exists (select 1 from public.members m where m.id = p_member_id) then
+  if not exists (select 1 from public.players m where m.member_id = p_member_id) then
     raise exception using errcode = 'P0001', message = '成员不存在';
   end if;
 
@@ -1072,15 +1071,15 @@ $$;
 -- exposed to PostgREST.
 -- ---------------------------------------------------------------------------
 
-alter table public.members enable row level security;
+alter table public.players enable row level security;
 alter table public.rooms enable row level security;
 alter table public.room_seats enable row level security;
 alter table public.games enable row level security;
 alter table public.game_players enable row level security;
 alter table public.score_audits enable row level security;
 
-drop policy if exists members_read on public.members;
-create policy members_read on public.members for select to authenticated using (true);
+drop policy if exists players_read on public.players;
+create policy players_read on public.players for select to authenticated using (true);
 drop policy if exists rooms_read on public.rooms;
 create policy rooms_read on public.rooms for select to authenticated using (true);
 drop policy if exists room_seats_read on public.room_seats;
@@ -1095,9 +1094,9 @@ create policy score_audits_read on public.score_audits for select to authenticat
 revoke all on schema private from public, anon, authenticated;
 revoke all on private.session_members, private.administrators, private.request_ledger from public, anon, authenticated;
 
-revoke all on public.members, public.rooms, public.room_seats, public.games, public.game_players, public.score_audits from anon, authenticated;
+revoke all on public.players, public.rooms, public.room_seats, public.games, public.game_players, public.score_audits from anon, authenticated;
 grant usage on schema public to authenticated, service_role;
-grant select on public.members, public.rooms, public.room_seats, public.games, public.game_players, public.score_audits to authenticated;
+grant select on public.players, public.rooms, public.room_seats, public.games, public.game_players, public.score_audits to authenticated;
 
 revoke all on function public.club_snapshot() from public, anon, authenticated;
 revoke all on function public.create_member(text) from public, anon, authenticated;
