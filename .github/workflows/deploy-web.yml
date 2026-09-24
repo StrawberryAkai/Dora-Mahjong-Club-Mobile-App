@@ -44,22 +44,33 @@ jobs:
           from pathlib import Path
           from urllib.parse import urlparse
 
-          url = os.environ['SUPABASE_URL'].strip()
-          key = os.environ['SUPABASE_PUBLISHABLE_KEY'].strip()
-          if urlparse(url).scheme != 'https' or not urlparse(url).hostname:
-              raise SystemExit('Set SUPABASE_URL in repository Actions secrets.')
-          if not key.startswith('sb_publishable_'):
-              raise SystemExit('Set SUPABASE_PUBLISHABLE_KEY to a client publishable key.')
+          url = os.environ.get('SUPABASE_URL', '').strip()
+          key = os.environ.get('SUPABASE_PUBLISHABLE_KEY', '').strip()
           if any(character in url + key for character in '\r\n'):
               raise SystemExit('Supabase configuration must contain single-line values.')
 
           # Flutter bundles this file publicly. Never include service-role keys
           # or administrator passwords, even when supplied as Actions secrets.
-          Path('.env').write_text(
-              f'APP_MODE=development\nSUPABASE_URL={url}\n'
-              f'SUPABASE_PUBLISHABLE_KEY={key}\n',
-              encoding='utf-8',
-          )
+          if url and key:
+              if urlparse(url).scheme != 'https' or not urlparse(url).hostname:
+                  raise SystemExit('Set SUPABASE_URL in repository Actions secrets.')
+              if not key.startswith('sb_publishable_'):
+                  raise SystemExit('Set SUPABASE_PUBLISHABLE_KEY to a client publishable key.')
+              Path('.env').write_text(
+                  f'APP_MODE=development\nSUPABASE_URL={url}\n'
+                  f'SUPABASE_PUBLISHABLE_KEY={key}\n',
+                  encoding='utf-8',
+              )
+          elif not url and not key:
+              print(
+                  'SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY are unset; '
+                  'building with APP_MODE=local.'
+              )
+              Path('.env').write_text('APP_MODE=local\n', encoding='utf-8')
+          else:
+              raise SystemExit(
+                  'Set both SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY, or neither.'
+              )
           PY
 
       - name: Install dependencies
