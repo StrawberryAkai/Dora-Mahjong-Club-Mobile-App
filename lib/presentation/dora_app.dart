@@ -506,7 +506,10 @@ class _MemberEntryPageState extends State<_MemberEntryPage> {
                     width: 68,
                     height: 68,
                     fit: BoxFit.contain,
-                    semanticLabel: strings.text('UCSD 麻将社', 'Dora Mahjong Club'),
+                    semanticLabel: strings.text(
+                      'UCSD 麻将社',
+                      'Dora Mahjong Club',
+                    ),
                   ),
                   const Spacer(),
                   if (widget.controller.isDemo) ...[
@@ -772,10 +775,7 @@ class _CreateMemberSheetState extends State<_CreateMemberSheet> {
             onSubmitted: (_) => _submit(),
             decoration: InputDecoration(
               labelText: strings.text('姓名', 'Name'),
-              hintText: strings.text(
-                '例如：JIN 或者 近',
-                'For example: JIN or 近',
-              ),
+              hintText: strings.text('例如：JIN 或者 近', 'For example: JIN or 近'),
             ),
           ),
           const SizedBox(height: 10),
@@ -923,6 +923,13 @@ class _AdminLoginSheetState extends State<_AdminLoginSheet> {
 
 enum _ShellView { rooms, pending, history, ranking, events, audits }
 
+typedef _ShellLocation = ({
+  _ShellView view,
+  String? roomId,
+  String? gameId,
+  String? eventId,
+});
+
 class _DoraShell extends StatefulWidget {
   const _DoraShell({required this.controller});
 
@@ -933,30 +940,90 @@ class _DoraShell extends StatefulWidget {
 }
 
 class _DoraShellState extends State<_DoraShell> {
-  _ShellView _view = _ShellView.rooms;
-  String? _roomId;
-  String? _gameId;
+  // Shell-owned history lets system Back restore the last tab or detail page.
+  // An empty history leaves the explicitly selected Rooms root in place.
+  _ShellLocation _location = (
+    view: _ShellView.rooms,
+    roomId: null,
+    gameId: null,
+    eventId: null,
+  );
+  final List<_ShellLocation> _previousLocations = [];
 
-  void _openRoom(String roomId) => setState(() {
-    _roomId = roomId;
-    _gameId = null;
-  });
+  void _navigateTo(_ShellLocation next) {
+    if (next == _location) return;
+    setState(() {
+      _previousLocations.add(_location);
+      _location = next;
+    });
+  }
 
-  void _openGame(String gameId) => setState(() {
-    _gameId = gameId;
-    _roomId = null;
-  });
+  void _replaceLocation(_ShellLocation next) {
+    if (next == _location) return;
+    setState(() => _location = next);
+  }
 
-  void _closeDetail() => setState(() {
-    _roomId = null;
-    _gameId = null;
-  });
+  void _goBack() {
+    if (_previousLocations.isEmpty) return;
+    setState(() => _location = _previousLocations.removeLast());
+  }
 
-  void _goTo(_ShellView view) => setState(() {
-    _view = view;
-    _roomId = null;
-    _gameId = null;
-  });
+  void _openRoom(String roomId) => _navigateTo((
+    view: _location.view,
+    roomId: roomId,
+    gameId: null,
+    eventId: null,
+  ));
+
+  void _openGame(String gameId) => _navigateTo((
+    view: _location.view,
+    roomId: null,
+    gameId: gameId,
+    eventId: null,
+  ));
+
+  void _goTo(_ShellView view) {
+    // A repeated tap on the selected tab must leave an open event detail alone.
+    if (_location.view == view &&
+        _location.roomId == null &&
+        _location.gameId == null) {
+      return;
+    }
+    _navigateTo((view: view, roomId: null, gameId: null, eventId: null));
+  }
+
+  void _openEvent(String eventId) => _navigateTo((
+    view: _location.view,
+    roomId: _location.roomId,
+    gameId: _location.gameId,
+    eventId: eventId,
+  ));
+
+  void _changeEvent(String eventId) => _replaceLocation((
+    view: _location.view,
+    roomId: _location.roomId,
+    gameId: _location.gameId,
+    eventId: eventId,
+  ));
+
+  void _recoverMissingEvent(_ShellLocation expected, String eventId) {
+    if (_location != expected || expected.eventId != eventId) return;
+    final eventList = (
+      view: expected.view,
+      roomId: expected.roomId,
+      gameId: expected.gameId,
+      eventId: null,
+    );
+    setState(() {
+      // Opening an event from its list put that same list directly underneath.
+      // Collapse the pair so recovery does not make Back show the list twice.
+      if (_previousLocations.isNotEmpty &&
+          _previousLocations.last == eventList) {
+        _previousLocations.removeLast();
+      }
+      _location = eventList;
+    });
+  }
 
   Future<void> _showProfile() async {
     await showModalBottomSheet<void>(
@@ -972,75 +1039,88 @@ class _DoraShellState extends State<_DoraShell> {
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: widget.controller,
-      builder: (context, _) {
-        final hasDetail = _roomId != null || _gameId != null;
-        Widget body;
-        if (_gameId != null) {
-          body = _GameDetailPage(
-            controller: widget.controller,
-            gameId: _gameId!,
-            onBack: _closeDetail,
-            onOpenRoom: _openRoom,
-          );
-        } else if (_roomId != null) {
-          body = _RoomDetailPage(
-            controller: widget.controller,
-            roomId: _roomId!,
-            onBack: _closeDetail,
-            onOpenGame: _openGame,
-          );
-        } else {
-          body = switch (_view) {
-            _ShellView.rooms => _HomePage(
-              controller: widget.controller,
-              onRoom: _openRoom,
-              onPending: () => _goTo(_ShellView.pending),
-              onProfile: _showProfile,
-            ),
-            _ShellView.pending => _PendingPage(
-              controller: widget.controller,
-              onGame: _openGame,
-              onProfile: _showProfile,
-            ),
-            _ShellView.history => _HistoryPage(
-              controller: widget.controller,
-              onGame: _openGame,
-              onProfile: _showProfile,
-            ),
-            _ShellView.ranking => LeaderboardPage(
-              controller: widget.controller,
-              onProfile: _showProfile,
-            ),
-            _ShellView.events => EventsPage(
-              controller: widget.controller,
-              onProfile: _showProfile,
-            ),
-            _ShellView.audits => _AuditPage(
-              controller: widget.controller,
-              onBack: () => _goTo(_ShellView.rooms),
-              onProfile: _showProfile,
-            ),
-          };
-        }
-        return Scaffold(
-          body: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 220),
-            child: KeyedSubtree(
-              key: ValueKey<Object?>(_gameId ?? _roomId ?? _view),
-              child: body,
-            ),
-          ),
-          bottomNavigationBar: hasDetail || _view == _ShellView.audits
-              ? null
-              : _ShellNavigation(
-                  current: _view,
-                  controller: widget.controller,
-                  onChanged: _goTo,
-                ),
-        );
+    return PopScope<Object?>(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _goBack();
       },
+      child: ListenableBuilder(
+        listenable: widget.controller,
+        builder: (context, _) {
+          final location = _location;
+          final hasDetail = location.roomId != null || location.gameId != null;
+          Widget body;
+          if (location.gameId != null) {
+            body = _GameDetailPage(
+              controller: widget.controller,
+              gameId: location.gameId!,
+              onBack: _goBack,
+              onOpenRoom: _openRoom,
+            );
+          } else if (location.roomId != null) {
+            body = _RoomDetailPage(
+              controller: widget.controller,
+              roomId: location.roomId!,
+              onBack: _goBack,
+              onOpenGame: _openGame,
+            );
+          } else {
+            body = switch (location.view) {
+              _ShellView.rooms => _HomePage(
+                controller: widget.controller,
+                onRoom: _openRoom,
+                onPending: () => _goTo(_ShellView.pending),
+                onProfile: _showProfile,
+              ),
+              _ShellView.pending => _PendingPage(
+                controller: widget.controller,
+                onGame: _openGame,
+                onProfile: _showProfile,
+              ),
+              _ShellView.history => _HistoryPage(
+                controller: widget.controller,
+                onGame: _openGame,
+                onProfile: _showProfile,
+              ),
+              _ShellView.ranking => LeaderboardPage(
+                controller: widget.controller,
+                onProfile: _showProfile,
+              ),
+              _ShellView.events => EventsPage(
+                controller: widget.controller,
+                selectedEventId: location.eventId,
+                onProfile: _showProfile,
+                onBack: _goBack,
+                onOpenEvent: _openEvent,
+                onChangeEvent: _changeEvent,
+                onMissingEvent: (eventId) =>
+                    _recoverMissingEvent(location, eventId),
+              ),
+              _ShellView.audits => _AuditPage(
+                controller: widget.controller,
+                onBack: _goBack,
+                onProfile: _showProfile,
+              ),
+            };
+          }
+          return Scaffold(
+            body: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              child: KeyedSubtree(
+                key: ValueKey<_ShellLocation>(location),
+                child: body,
+              ),
+            ),
+            bottomNavigationBar: hasDetail || location.view == _ShellView.audits
+                ? null
+                : _ShellNavigation(
+                    current: location.view,
+                    controller: widget.controller,
+                    onChanged: _goTo,
+                  ),
+          );
+        },
+      ),
     );
   }
 }

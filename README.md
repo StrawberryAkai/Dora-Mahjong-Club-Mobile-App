@@ -4,6 +4,8 @@ Flutter / Dart 编写的 Android、iOS 四人立直麻将记分应用。v0.1 包
 
 产品名称为 **Dora Helper**，服务于 **Dora Mahjong Club（UCSD 麻将社）**。首版版本记法 `0.1.0.1` 对应 Flutter `0.1.0+1`，即版本 `0.1.0`、构建号 `1`。Android 应用标识为 `dora.dora_mahjong`；iOS 因不支持下划线，使用 `dora.doraMahjong`。这些是项目中的发布配置，尚不代表已在应用商店注册或发布。
 
+当前版本为 `0.1.1+2`。手机返回键会逐级返回应用内上一页，有弹窗时先关闭弹窗；首页没有上一页时保持打开。
+
 开发者接手请先阅读 [开发维护指南](MAINTAINING.md)，了解代码入口、同步流程、积分与座位约束，以及 Git Bash 预览命令。
 
 ## 先体验，不需要数据库
@@ -126,4 +128,6 @@ node tool/serve_preview.mjs
 
 参考资料：[产品需求](docs/product-requirements-v0.1.md)、[界面设计与网上参考](docs/ui-design.md)。
 
-发布前仍需配置 Android 正式签名及 iOS 开发团队，并在数据库就绪后单独验证真实设备和服务端流程。当前生成的 Android release 配置使用开发签名，只用于本地开发。
+Android release 使用独立的正式签名，不再回退到 debug 签名。首次配置、备份与 Git Bash 打包命令见 [Android 发布签名](docs/android-release.md)。iOS 发布仍需配置开发团队；发布前需单独验证真实设备和服务端流程。
+
+已部署的 Supabase 项目不能通过重新执行初始 `202609220001_club.sql` 来修复启动错误：其中的 `CREATE OR REPLACE FUNCTION` 会把积分、活动及已合并到 `players` 的接口覆盖回旧版。出现「积分功能尚未初始化」时，先检查 `club_snapshot()` 返回契约和现有数据库结构；保留历史积分，使用针对实际结构的修复脚本，不重新初始化或重算历史。

@@ -6,39 +6,60 @@ import '../domain/models.dart';
 import 'leaderboard_page.dart';
 import 'localization.dart';
 
-/// The Events destination owns event browsing, detail, and event ranking.
-/// Keeping detail state here makes the fifth bottom tab a single activity
-/// surface instead of introducing a separate ranking destination per event.
+/// Displays event browsing, detail, and rankings within the Events destination.
+/// The shell owns selection so event details share the app's back history.
 class EventsPage extends StatefulWidget {
   const EventsPage({
     super.key,
     required this.controller,
+    required this.selectedEventId,
     required this.onProfile,
+    required this.onBack,
+    required this.onOpenEvent,
+    required this.onChangeEvent,
+    required this.onMissingEvent,
   });
 
   final ClubController controller;
+  final String? selectedEventId;
   final VoidCallback onProfile;
+  final VoidCallback onBack;
+  final ValueChanged<String> onOpenEvent;
+  final ValueChanged<String> onChangeEvent;
+  final ValueChanged<String> onMissingEvent;
 
   @override
   State<EventsPage> createState() => _EventsPageState();
 }
 
 class _EventsPageState extends State<EventsPage> {
-  String? _selectedEventId;
+  String? _pendingMissingEventCheck;
 
   ClubEvent? _selectedEvent(ClubSnapshot snapshot) {
-    final id = _selectedEventId;
+    final id = widget.selectedEventId;
     if (id == null) return null;
     return snapshot.events.where((event) => event.id == id).firstOrNull;
   }
 
-  void _openEvent(ClubEvent event) => setState(() {
-    _selectedEventId = event.id;
-  });
-
-  void _closeEvent() => setState(() {
-    _selectedEventId = null;
-  });
+  void _scheduleMissingEventRecovery(String eventId) {
+    if (_pendingMissingEventCheck == eventId) return;
+    _pendingMissingEventCheck = eventId;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_pendingMissingEventCheck == eventId) {
+        _pendingMissingEventCheck = null;
+      }
+      // AnimatedSwitcher keeps outgoing pages mounted. Confirm this is still
+      // the selected, missing event before asking the shell to recover it.
+      if (widget.selectedEventId != eventId ||
+          widget.controller.snapshot.events.any(
+            (event) => event.id == eventId,
+          )) {
+        return;
+      }
+      widget.onMissingEvent(eventId);
+    });
+  }
 
   Future<void> _editEvent(BuildContext context, {ClubEvent? event}) async {
     await showModalBottomSheet<void>(
@@ -60,12 +81,10 @@ class _EventsPageState extends State<EventsPage> {
         if (starts != 0) return starts;
         return a.id.compareTo(b.id);
       });
+    final selectedEventId = widget.selectedEventId;
     final selected = _selectedEvent(snapshot);
-    if (_selectedEventId != null && selected == null) {
-      // A refresh can remove an event while its detail is open.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _closeEvent();
-      });
+    if (selectedEventId != null && selected == null) {
+      _scheduleMissingEventRecovery(selectedEventId);
     }
     return SafeArea(
       child: Center(
@@ -76,7 +95,7 @@ class _EventsPageState extends State<EventsPage> {
                   controller: widget.controller,
                   events: events,
                   onProfile: widget.onProfile,
-                  onEvent: _openEvent,
+                  onEvent: (event) => widget.onOpenEvent(event.id),
                   onCreate: widget.controller.isAdmin
                       ? () => _editEvent(context)
                       : null,
@@ -86,8 +105,8 @@ class _EventsPageState extends State<EventsPage> {
                   events: events,
                   event: selected,
                   isAdmin: widget.controller.isAdmin,
-                  onBack: _closeEvent,
-                  onEventChanged: _openEvent,
+                  onBack: widget.onBack,
+                  onEventChanged: (event) => widget.onChangeEvent(event.id),
                   onEdit: () => _editEvent(context, event: selected),
                 ),
         ),

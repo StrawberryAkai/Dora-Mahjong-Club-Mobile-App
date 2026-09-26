@@ -1,8 +1,8 @@
 name: dora_mahjong
 description: Dora Helper for Dora Mahjong Club (UCSD 麻将社).
 publish_to: none
-# Requested 0.1.0.1 maps to version 0.1.0 and build 1.
-version: 0.1.0+1
+# Version name 0.1.1, build number 2.
+version: 0.1.1+2
 
 environment:
   sdk: '>=3.9.0 <4.0.0'

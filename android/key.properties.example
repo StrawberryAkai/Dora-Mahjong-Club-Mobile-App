@@ -1,0 +1,8 @@
+# Copy this file to android/key.properties and replace the placeholders.
+# Keep the real android/key.properties and keystore private. Never upload either one.
+# This example contains only placeholders and may be committed.
+# Keep a secure backup of the keystore and these credentials in a separate location.
+storeFile=C:/Users/YOUR_NAME/.dora-helper/signing/dora-helper-release.jks
+storePassword=REPLACE_WITH_KEYSTORE_PASSWORD
+keyPassword=REPLACE_WITH_KEY_PASSWORD
+keyAlias=REPLACE_WITH_KEY_ALIAS
